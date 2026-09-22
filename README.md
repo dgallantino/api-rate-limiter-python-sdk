@@ -61,6 +61,41 @@ app.wsgi_app = RateLimitWSGI(
 )
 ```
 
+### Flask `before_request`
+
+```python
+from flask import Flask
+from api_rate_limiter import dial
+from api_rate_limiter.flask import rate_limit
+
+app = Flask(__name__)
+channel, stub = dial("127.0.0.1:50051")
+app.before_request(rate_limit(stub, key="header:X-API-Key", cost=1, fail="closed"))
+```
+
+### FastAPI
+
+`install` only registers the exception handler used by `Depends`. It does not wrap the app. `http_middleware` is for every request.
+
+```python
+from fastapi import Depends, FastAPI
+from api_rate_limiter import dial_aio
+from api_rate_limiter.fastapi import http_middleware, install, rate_limit
+
+channel, stub = dial_aio("127.0.0.1:50051")
+app = FastAPI()
+install(app)
+
+@app.get("/", dependencies=[Depends(rate_limit(stub, key="header:X-API-Key"))])
+async def index():
+    return {"ok": True}
+
+# or, for every request:
+app.middleware("http")(http_middleware(stub, key="header:X-API-Key", cost=1, fail="closed"))
+```
+
+`dial_aio` must run on the same event loop that serves the app.
+
 ### Deny contract
 
 - **429** `{"error":"too_many_requests"}`
@@ -75,20 +110,22 @@ Start the service with the parent Compose demo (`docker compose up --build` in [
 
 ## Examples
 
-[`examples/flask_app.py`](examples/flask_app.py) and [`examples/fastapi_app.py`](examples/fastapi_app.py) are runnable copies of the usage above. Install the dev extra, generate stubs, and start Check first.
+[`examples/flask_app.py`](examples/flask_app.py) uses the Flask `before_request` hook. [`examples/fastapi_app.py`](examples/fastapi_app.py) uses FastAPI HTTP middleware. [`examples/fastapi_depends_app.py`](examples/fastapi_depends_app.py) limits a single route with `Depends`. Middleware and `Depends` are separate apps so the same request is not checked twice. Install the dev extra, generate stubs, and start Check first.
 
 ```bash
 pip install -e ".[dev]"
 make proto
 python examples/flask_app.py
 python examples/fastapi_app.py
+python examples/fastapi_depends_app.py
 ```
 
-Flask listens on `127.0.0.1:5000`. FastAPI listens on `127.0.0.1:8000`. `CHECK_ADDR` overrides the Check address (default `127.0.0.1:50051`).
+Flask listens on `127.0.0.1:5000`. The middleware app listens on `127.0.0.1:8000`. The `Depends` app listens on `127.0.0.1:8001`. `CHECK_ADDR` overrides the Check address (default `127.0.0.1:50051`).
 
 ```bash
 curl -H 'X-API-Key: demo' http://127.0.0.1:5000/
 curl -H 'X-API-Key: demo' http://127.0.0.1:8000/
+curl -H 'X-API-Key: demo' http://127.0.0.1:8001/
 ```
 
 Each example waits for Check before it serves. That probe is only for the demo. The SDK does not require it; without it, a down Check service is a normal fail-closed HTTP 429.

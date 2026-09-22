@@ -1,32 +1,33 @@
-"""FastAPI example. Requires a running Check service.
+"""FastAPI Depends example. Requires a running Check service.
 
-dial_aio() binds the channel to the running event loop, so the SDK setup
-runs inside the loop that serves the app, and the demo probe runs after it.
+Separate from fastapi_app.py: HTTP middleware on that app would check the
+same request again. The route is registered after dial_aio() because the
+dependency closes over the stub, and dial_aio() must run on the serving loop.
 """
 
 from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from api_rate_limiter import dial_aio
-from api_rate_limiter.fastapi import http_middleware
+from api_rate_limiter.fastapi import install, rate_limit
 
 addr = os.environ.get("CHECK_ADDR", "127.0.0.1:50051")
 app = FastAPI()
 
 
-@app.get("/")
-async def index():
-    return {"ok": True}
-
-
 def _use_sdk():
     channel, stub = dial_aio(addr)
-    app.middleware("http")(
-        http_middleware(stub, key="header:X-API-Key", cost=1, fail="closed")
-    )
+    install(app)
+
+    limit = rate_limit(stub, key="header:X-API-Key", cost=1, fail="closed")
+
+    @app.get("/", dependencies=[Depends(limit)])
+    async def index():
+        return {"ok": True}
+
     return channel
 
 
@@ -43,7 +44,7 @@ if __name__ == "__main__":
         # until the first request; without this check, a down Check service
         # looks like HTTP 429.
         await require_check_aio(channel, addr)
-        config = uvicorn.Config(app, host="127.0.0.1", port=8000)
+        config = uvicorn.Config(app, host="127.0.0.1", port=8001)
         await uvicorn.Server(config).serve()
 
     asyncio.run(_main())
